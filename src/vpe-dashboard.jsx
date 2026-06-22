@@ -74,6 +74,16 @@ const DEFAULT_WEEK_TASKS = [
 
 const CLUB_LINK = "https://toastmasterclub.org";
 
+const DEV_FEELING_MAP = {
+  thriving: { label: "Thriving", fg: "#2E7D32", bg: "#E8F3E9" },
+  good: { label: "Good", fg: "#2E7D32", bg: "#E8F3E9" },
+  unsure: { label: "Needs guidance", fg: "#B45309", bg: "#FCF3E3" },
+  struggling: { label: "Needs support", fg: "#B3261E", bg: "#FBEAE8" },
+};
+const CLS_DEV_ROW = "flex flex-wrap items-center gap-1.5 text-xs";
+const CLS_NOTE_P = "text-xs italic";
+const MUTED = "#5B6B73";
+
 // Cycle definitions: months are 0-indexed (Jan = 0)
 const DEFAULT_CYCLES = [
   { id: "c1", name: "Storytelling", span: "Jul–Aug", months: [6, 7] },
@@ -90,10 +100,13 @@ const emptyData = () => ({
   cycles: DEFAULT_CYCLES.map((c) => ({ ...c, tips: [], actions: [] })),
   recognitions: [],
   weeks: [],
+  educationGoals: [],
 });
 
 // ---------- Helpers ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+const memberPaths = (m) => m.paths || (m.path ? [m.path] : []);
 
 const daysSince = (iso) => {
   if (!iso) return null;
@@ -116,7 +129,7 @@ const fmtDate = (iso) => {
 
 const memberStatus = (m) => {
   const ds = daysSince(m.lastAttended);
-  if (ds === null) return { key: "unknown", label: "No attendance recorded", fg: C.amber, bg: C.amberBg };
+  if (ds === null) return { key: "dormant", label: "No attendance recorded", fg: C.red, bg: C.redBg };
   if (ds > 60) return { key: "dormant", label: `Dormant — ${ds} days`, fg: C.red, bg: C.redBg };
   if (ds > 30) return { key: "nudge", label: `Needs a nudge — ${ds} days`, fg: C.amber, bg: C.amberBg };
   return { key: "ok", label: `On track — ${ds}d ago`, fg: C.green, bg: C.greenBg };
@@ -246,14 +259,18 @@ function Welcome({ onStartFresh, onLoadFile }) {
 
 // ---------- Member form modal ----------
 function MemberModal({ initial, onSave, onClose }) {
-  const [m, setM] = useState(
-    initial || {
-      id: uid(), name: "", path: "", level: 1, currentProject: "",
-      lastAttended: "", totalMeetings: 0, roles: [], isNew: false,
-      onboardingStart: "", notes: "",
+  const [m, setM] = useState(() => {
+    if (!initial) {
+      return {
+        id: uid(), name: "", paths: [], level: 1, currentProject: "",
+        lastAttended: "", totalMeetings: 0, roles: [], isNew: false,
+        onboardingStart: "", notes: "", roleLog: [], devFeeling: "", devNextStep: "", levelDates: {},
+      };
     }
-  );
+    return { ...initial, paths: memberPaths(initial), roleLog: initial.roleLog || [], devFeeling: initial.devFeeling || "", devNextStep: initial.devNextStep || "", levelDates: initial.levelDates || {} };
+  });
   const [customRole, setCustomRole] = useState("");
+  const [roleLogDraft, setRoleLogDraft] = useState({ role: "", date: "" });
   const set = (k, v) => setM((p) => ({ ...p, [k]: v }));
   const toggleRole = (r) =>
     set("roles", m.roles.includes(r) ? m.roles.filter((x) => x !== r) : [...m.roles, r]);
@@ -274,14 +291,30 @@ function MemberModal({ initial, onSave, onClose }) {
             <input className={inputCls} style={inputStyle} value={m.name}
               onChange={(e) => set("name", e.target.value)} placeholder="Full name" />
           </Field>
-          <Field label="Pathways path">
-            <select className={inputCls} style={inputStyle} value={m.path}
-              onChange={(e) => set("path", e.target.value)}>
-              <option value="">— Not selected —</option>
-              {PATHS.map((p) => <option key={p}>{p}</option>)}
-            </select>
-          </Field>
-          <Field label="Current level (1–5)">
+          <div className="sm:col-span-2">
+            <span className="block mb-1 text-sm font-semibold" style={{ color: C.blueDeep }}>Pathways paths</span>
+            <div className="flex flex-wrap gap-1.5">
+              {PATHS.map((p) => {
+                const on = (m.paths || []).includes(p);
+                return (
+                  <button key={p} type="button"
+                    onClick={() => set("paths", on ? m.paths.filter((x) => x !== p) : [...(m.paths || []), p])}
+                    className="px-2 py-1 rounded-full text-xs font-semibold"
+                    style={{
+                      backgroundColor: on ? C.blue : "white",
+                      color: on ? "white" : C.blue,
+                      border: `1px solid ${on ? C.blue : C.grayLine}`,
+                    }}>
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
+            {(m.paths || []).length === 0 && (
+              <p className="text-xs mt-1" style={{ color: C.amber }}>No path selected — click to add one or more.</p>
+            )}
+          </div>
+          <Field label="Current level (working on)">
             <select className={inputCls} style={inputStyle} value={m.level}
               onChange={(e) => set("level", Number(e.target.value))}>
               {[1, 2, 3, 4, 5].map((l) => <option key={l} value={l}>Level {l}</option>)}
@@ -299,6 +332,26 @@ function MemberModal({ initial, onSave, onClose }) {
             <input type="number" min="0" className={inputCls} style={inputStyle} value={m.totalMeetings}
               onChange={(e) => set("totalMeetings", Math.max(0, Number(e.target.value)))} />
           </Field>
+
+          <div className="sm:col-span-2">
+            <span className="block mb-1 text-sm font-semibold" style={{ color: C.blueDeep }}>Level completion dates</span>
+            <p className="text-xs mb-2" style={{ color: "#5B6B73" }}>Record the date each Pathways level was completed — used to track education goals.</p>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {[1, 2, 3, 4, 5].map((l) => (
+                <label key={l} className="block text-xs">
+                  <span className="block mb-1 font-semibold" style={{ color: C.blueDeep }}>Level {l}</span>
+                  <input type="date" className={inputCls} style={inputStyle}
+                    value={(m.levelDates || {})[String(l)] || ""}
+                    onChange={(e) => {
+                      const updated = { ...(m.levelDates || {}) };
+                      if (e.target.value) updated[String(l)] = e.target.value;
+                      else delete updated[String(l)];
+                      set("levelDates", updated);
+                    }} />
+                </label>
+              ))}
+            </div>
+          </div>
 
           <div className="sm:col-span-2">
             <span className="block mb-1 text-sm font-semibold" style={{ color: C.blueDeep }}>Roles completed</span>
@@ -344,6 +397,62 @@ function MemberModal({ initial, onSave, onClose }) {
           </div>
 
           <div className="sm:col-span-2">
+            <span className="block mb-1 text-sm font-semibold" style={{ color: C.blueDeep }}>Role history (dated)</span>
+            {(m.roleLog || []).length > 0 && (
+              <ul className="mb-2 space-y-1">
+                {(m.roleLog || []).map((entry) => (
+                  <li key={entry.id} className="flex items-center gap-2 text-xs px-2 py-1 rounded"
+                    style={{ backgroundColor: C.paper, border: `1px solid ${C.grayLine}` }}>
+                    <span className="font-semibold" style={{ color: C.blueDeep }}>{entry.role}</span>
+                    <span style={{ color: "#5B6B73" }}>{fmtDate(entry.date)}</span>
+                    <button className="ml-auto text-xs" style={{ color: "#8A958F" }}
+                      onClick={() => set("roleLog", m.roleLog.filter((e) => e.id !== entry.id))}
+                      aria-label="Remove">✕</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex gap-2">
+              <select className={`${inputCls} flex-1`} style={inputStyle} value={roleLogDraft.role}
+                onChange={(e) => setRoleLogDraft((p) => ({ ...p, role: e.target.value }))}>
+                <option value="">Role…</option>
+                {[...new Set([...COMMON_ROLES, ...m.roles])].map((r) => <option key={r}>{r}</option>)}
+              </select>
+              <input type="date" className={`${inputCls} flex-1`} style={inputStyle}
+                value={roleLogDraft.date}
+                onChange={(e) => setRoleLogDraft((p) => ({ ...p, date: e.target.value }))} />
+              <Btn kind="ghost" onClick={() => {
+                const { role, date } = roleLogDraft;
+                if (role.trim() && date) {
+                  const existing = (m.roleLog || []).find((e) => e.role === role.trim());
+                  if (existing) {
+                    set("roleLog", m.roleLog.map((e) => e.role === role.trim() ? { ...e, date } : e));
+                  } else {
+                    set("roleLog", [...(m.roleLog || []), { id: uid(), role: role.trim(), date }]);
+                  }
+                  setRoleLogDraft({ role: "", date: "" });
+                }
+              }}>Log</Btn>
+            </div>
+          </div>
+
+          <Field label="Development check-in">
+            <select className={inputCls} style={inputStyle} value={m.devFeeling}
+              onChange={(e) => set("devFeeling", e.target.value)}>
+              <option value="">— Not recorded —</option>
+              <option value="thriving">Thriving — confident and progressing well</option>
+              <option value="good">Good — steady, no blockers</option>
+              <option value="unsure">Unsure — needs guidance on next steps</option>
+              <option value="struggling">Struggling — needs active support</option>
+            </select>
+          </Field>
+          <Field label="Suggested next step">
+            <input className={inputCls} style={inputStyle} value={m.devNextStep}
+              onChange={(e) => set("devNextStep", e.target.value)}
+              placeholder="e.g. Schedule Icebreaker, pick a Pathways path…" />
+          </Field>
+
+          <div className="sm:col-span-2">
             <Field label="Notes">
               <textarea rows={3} className={inputCls} style={inputStyle} value={m.notes}
                 onChange={(e) => set("notes", e.target.value)}
@@ -363,31 +472,43 @@ function MemberModal({ initial, onSave, onClose }) {
 }
 
 // ---------- Onboarding progress bar ----------
-function OnboardingBar({ startISO, compact, stages }) {
+function OnboardingBar({ startISO, compact, stages, stagesDone, onToggleStage }) {
   const plan = stages && stages.length ? stages : ONBOARDING_STAGES;
   const total = plan[plan.length - 1].to;
   const day = onboardingDay(startISO);
-  if (day === null) {
-    return <p className="text-xs" style={{ color: C.amber }}>Set an onboarding start date to track progress.</p>;
-  }
-  const pct = Math.min(100, Math.max(0, (day / total) * 100));
-  const stage = stageForDay(day, plan);
+
+  const isChecked = (i) => stagesDone && stagesDone[i];
+  const isDone = (s, i) => isChecked(i) || (day !== null && day > s.to);
+  const isActive = (s, i) => !isChecked(i) && day !== null && day >= s.from && day <= s.to;
+
+  const checkedCount = stagesDone ? stagesDone.filter(Boolean).length : 0;
+  const dayDone = day !== null ? plan.filter((s) => day > s.to).length : 0;
+  const effectiveDone = Math.max(checkedCount, dayDone);
+  const pct = Math.min(100, Math.round((effectiveDone / plan.length) * 100));
+  const allDone = effectiveDone >= plan.length;
+
+  const currentStage = day !== null ? stageForDay(day, plan) : null;
+
   return (
     <div>
       <div className="flex justify-between text-xs mb-1">
         <span className="font-semibold" style={{ color: C.blueDeep }}>
-          {day > total ? "Plan complete 🎉" : `Day ${day} of ${total} — ${stage.label}`}
+          {allDone ? "Plan complete 🎉"
+            : day !== null && currentStage && !currentStage.done ? `Day ${day} of ${total} — ${currentStage.label}`
+            : day === null ? `${checkedCount}/${plan.length} stages complete`
+            : `Day ${day} of ${total}`}
         </span>
-        <span style={{ color: "#5B6B73" }}>{Math.round(pct)}%</span>
+        <span style={{ color: "#5B6B73" }}>{pct}%</span>
       </div>
       <div className="h-2.5 rounded-full overflow-hidden" style={{ backgroundColor: C.grayLine }}>
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: day > total ? C.green : C.maroon }} />
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: allDone ? C.green : C.maroon }} />
       </div>
       {!compact && (
         <ol className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-          {plan.map((s) => {
-            const done = day > s.to;
-            const active = day >= s.from && day <= s.to;
+          {plan.map((s, i) => {
+            const done = isDone(s, i);
+            const active = isActive(s, i);
+            const checked = isChecked(i);
             return (
               <li key={`${s.from}-${s.label}`} className="flex items-center gap-2 text-xs px-2 py-1 rounded"
                 style={{
@@ -395,7 +516,13 @@ function OnboardingBar({ startISO, compact, stages }) {
                   color: active ? C.blueDeep : done ? C.green : "#5B6B73",
                   fontWeight: active ? 700 : 500,
                 }}>
-                <span>{done ? "✓" : active ? "▶" : "○"}</span>
+                {onToggleStage ? (
+                  <input type="checkbox" checked={checked || (day !== null && day > s.to)} className="shrink-0"
+                    onChange={() => onToggleStage(i)}
+                    title="Mark stage complete" />
+                ) : (
+                  <span>{done ? "✓" : active ? "▶" : "○"}</span>
+                )}
                 <span>Days {s.from}–{s.to}: {s.label}</span>
               </li>
             );
@@ -481,7 +608,7 @@ function HomeView({ data, go }) {
 
   const stats = [
     { label: "Active members", value: data.members.length, onClick: () => go("members") },
-    { label: "Dormant (60+ days)", value: dormant.length, color: dormant.length ? C.red : C.green, onClick: () => go("members", "dormant") },
+    { label: "Dormant / no attendance", value: dormant.length, color: dormant.length ? C.red : C.green, onClick: () => go("members", "dormant") },
     { label: "In 100-day plan", value: newbies.length, onClick: () => go("onboarding") },
     { label: "Unposted recognitions", value: unposted.length, color: unposted.length ? C.amber : C.green, onClick: () => go("recognition") },
   ];
@@ -570,7 +697,7 @@ function HomeView({ data, go }) {
             <div className="flex flex-wrap gap-2">
               {dormant.map((m) => (
                 <Badge key={m.id} fg={C.red} bg={C.redBg}>
-                  {m.name} · {daysSince(m.lastAttended)}d
+                  {m.name} · {daysSince(m.lastAttended) !== null ? `${daysSince(m.lastAttended)}d` : "no attendance"}
                 </Badge>
               ))}
             </div>
@@ -593,6 +720,7 @@ function MembersView({ data, setData, initialFilter }) {
         if (filter === "dormant" && st !== "dormant") return false;
         if (filter === "active" && st === "dormant") return false;
         if (filter === "new" && !m.isNew) return false;
+        if (filter === "nopath" && memberPaths(m).length > 0) return false;
         if (search && !m.name.toLowerCase().includes(search.toLowerCase())) return false;
         return true;
       })
@@ -614,7 +742,7 @@ function MembersView({ data, setData, initialFilter }) {
   };
 
   const filters = [
-    ["all", "All"], ["active", "Active"], ["dormant", "Dormant"], ["new", "New members"],
+    ["all", "All"], ["active", "Active"], ["dormant", "Dormant"], ["new", "New members"], ["nopath", "No path selected"],
   ];
 
   return (
@@ -650,6 +778,8 @@ function MembersView({ data, setData, initialFilter }) {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filtered.map((m) => {
             const st = memberStatus(m);
+            const df = DEV_FEELING_MAP[m.devFeeling] || null;
+            const daysAgo = daysSince(m.lastAttended);
             return (
               <Card key={m.id} className="p-4 flex flex-col gap-2"
                 accent={st.key === "dormant" ? C.red : st.key === "ok" ? C.green : C.amber}>
@@ -657,21 +787,23 @@ function MembersView({ data, setData, initialFilter }) {
                   <div>
                     <div className="font-bold" style={{ color: C.blueDeep }}>{m.name}</div>
                     <div className="text-xs" style={{ color: "#5B6B73" }}>
-                      {m.path ? `${m.path} · Level ${m.level}` : (
+                      {memberPaths(m).length > 0 ? (
+                        `${memberPaths(m).join(", ")} · Level ${m.level}`
+                      ) : (
                         <span className="font-semibold" style={{ color: C.amber }}>⚠ No Pathways path selected</span>
                       )}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <Badge fg={st.fg} bg={st.bg}>{st.key === "dormant" ? "● DORMANT" : st.label.split(" — ")[0]}</Badge>
-                    {!m.path && <Badge fg={C.amber} bg={C.amberBg}>No path</Badge>}
+                    {memberPaths(m).length === 0 && <Badge fg={C.amber} bg={C.amberBg}>No path</Badge>}
                   </div>
                 </div>
 
                 <div className="text-xs space-y-1" style={{ color: C.ink }}>
                   <div><span className="font-semibold">Project:</span> {m.currentProject || "—"}</div>
                   <div><span className="font-semibold">Last attended:</span> {fmtDate(m.lastAttended)}
-                    {st.key === "dormant" && <span style={{ color: C.red }}> ({daysSince(m.lastAttended)} days ago)</span>}
+                    {st.key === "dormant" && daysAgo !== null && <span style={{ color: C.red }}> ({daysAgo} days ago)</span>}
                   </div>
                   <div><span className="font-semibold">Meetings:</span> {m.totalMeetings}</div>
                 </div>
@@ -687,6 +819,18 @@ function MembersView({ data, setData, initialFilter }) {
                   </div>
                 )}
 
+                {m.roleLog && m.roleLog.length > 0 && (
+                  <div className="text-xs space-y-0.5">
+                    <span className="font-semibold" style={{ color: C.blueDeep }}>Recent roles:</span>
+                    {[...m.roleLog].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map((entry) => (
+                      <div key={entry.id} className="flex gap-1">
+                        <span style={{ color: C.ink }}>{entry.role}</span>
+                        <span style={{ color: "#8A958F" }}>· {fmtDate(entry.date)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {m.isNew && (
                   <div className="mt-1 p-2 rounded" style={{ backgroundColor: C.paper }}>
                     <div className="text-xs font-bold mb-1" style={{ color: C.maroon }}>100-day plan</div>
@@ -694,7 +838,14 @@ function MembersView({ data, setData, initialFilter }) {
                   </div>
                 )}
 
-                {m.notes && <p className="text-xs italic" style={{ color: "#5B6B73" }}>“{m.notes}”</p>}
+                {df && (
+                  <div className={CLS_DEV_ROW}>
+                    <span style={{ color: MUTED }}>Development:</span>
+                    <Badge fg={df.fg} bg={df.bg}>{df.label}</Badge>
+                    {m.devNextStep && <span style={{ color: MUTED }}>{'-> '}{m.devNextStep}</span>}
+                  </div>
+                )}
+                {m.notes && <p className={CLS_NOTE_P} style={{ color: MUTED }}>”{m.notes}”</p>}
 
                 <div className="flex gap-2 mt-auto pt-2">
                   <Btn kind="ghost" onClick={() => setEditing(m)}>Edit</Btn>
@@ -729,6 +880,17 @@ function OnboardingView({ data, setData }) {
     setEditingPlan(null);
   };
 
+  const toggleStage = (memberId, stageIdx, planLength) => {
+    setData((d) => ({
+      ...d,
+      members: d.members.map((m) => {
+        if (m.id !== memberId) return m;
+        const current = m.stagesDone || Array(planLength).fill(false);
+        return { ...m, stagesDone: current.map((v, i) => (i === stageIdx ? !v : v)) };
+      }),
+    }));
+  };
+
   return (
     <div>
       <SectionTitle sub="Each new member's journey from first visit to Icebreaker. Every plan can be tailored to the member.">
@@ -756,7 +918,15 @@ function OnboardingView({ data, setData }) {
                   <Btn kind="ghost" onClick={() => setEditingPlan(m)}>Edit plan</Btn>
                 </div>
               </div>
-              <OnboardingBar startISO={m.onboardingStart} stages={m.customPlan} />
+              <OnboardingBar
+                startISO={m.onboardingStart}
+                stages={m.customPlan}
+                stagesDone={m.stagesDone}
+                onToggleStage={(i) => {
+                  const plan = (m.customPlan && m.customPlan.length) ? m.customPlan : ONBOARDING_STAGES;
+                  toggleStage(m.id, i, plan.length);
+                }}
+              />
             </Card>
           ))}
         </div>
@@ -930,6 +1100,17 @@ function RecognitionView({ data, setData }) {
     }
   };
 
+  const copyLLMPrompt = () => {
+    const list = data.recognitions.filter((r) => !r.posted);
+    if (!list.length) return;
+    const items = list.map((r, i) => {
+      const detail = r.detail ? `: ${r.detail}` : "";
+      return `${i + 1}. ${r.member} – ${r.type}${detail}`;
+    }).join("\n");
+    const prompt = `You are writing Game Changers recognition posts for a Toastmasters club. Write an enthusiastic, warm 2–3 sentence recognition message for each achievement below. Address the member by first name and keep the tone celebratory and encouraging — suitable for posting in a club group chat.\n\n${items}\n\nFormat each as a separate post labelled with the member's name.`;
+    navigator.clipboard.writeText(prompt).then(() => alert("Prompt copied to clipboard — paste it into your favourite LLM!"));
+  };
+
   const needsDetail = form.type === "First time in a role" || form.type === "Pathways level completion";
 
   return (
@@ -939,12 +1120,16 @@ function RecognitionView({ data, setData }) {
       </SectionTitle>
 
       {unposted.length > 0 && (
-        <div className="mb-4 px-4 py-3 rounded-lg flex items-center gap-3"
+        <div className="mb-4 px-4 py-3 rounded-lg flex flex-wrap items-center gap-3"
           style={{ backgroundColor: C.amberBg, border: `1px solid ${C.amber}` }}>
           <span className="text-xl">⚠️</span>
           <span className="text-sm font-semibold" style={{ color: C.amber }}>
             {unposted.length} recognition{unposted.length > 1 ? "s" : ""} not yet posted to Game Changers.
           </span>
+          <Btn kind="ghost" className="ml-auto" onClick={copyLLMPrompt}
+            title="Copy a prompt you can paste into an LLM to generate recognition messages">
+            ✨ Generate recognition prompt
+          </Btn>
         </div>
       )}
 
@@ -1139,8 +1324,37 @@ function WeeklyView({ data, setData }) {
   );
 }
 
-// ---------- DTM tracker ----------
+// ---------- Education Goals + DTM tracker ----------
 function DTMView({ data, setData }) {
+  const currentYear = new Date().getFullYear();
+  const [goalYear, setGoalYear] = useState(currentYear);
+  const [showDTM, setShowDTM] = useState(false);
+
+  // --- Education Goals helpers ---
+  const goals = data.educationGoals || [];
+  const goalFor = (level) => goals.find((g) => g.year === goalYear && g.level === level);
+
+  const setGoalTarget = (level, target) => {
+    setData((d) => {
+      const existing = (d.educationGoals || []).find((g) => g.year === goalYear && g.level === level);
+      if (existing) {
+        return { ...d, educationGoals: d.educationGoals.map((g) =>
+          g.year === goalYear && g.level === level ? { ...g, target } : g) };
+      }
+      return { ...d, educationGoals: [...(d.educationGoals || []), { id: uid(), year: goalYear, level, target }] };
+    });
+  };
+
+  const completedLevel = (level) =>
+    data.members.filter((m) => {
+      const date = (m.levelDates || {})[String(level)];
+      return date && date.startsWith(String(goalYear));
+    });
+
+  const inProgressLevel = (level) =>
+    data.members.filter((m) => m.level === level && memberStatus(m).key !== "dormant");
+
+  // --- DTM helpers ---
   const tracked = data.members.filter((m) => m.dtm);
   const untracked = data.members.filter((m) => !m.dtm);
   const [pick, setPick] = useState("");
@@ -1171,69 +1385,202 @@ function DTMView({ data, setData }) {
     }
   };
 
+  const allYears = [...new Set([currentYear, currentYear - 1, ...(goals.map((g) => g.year))])].sort((a, b) => b - a);
+  const totalCompleted = [1, 2, 3, 4, 5].reduce((sum, l) => sum + completedLevel(l).length, 0);
+  const totalGoals = [1, 2, 3, 4, 5].filter((l) => goalFor(l)).length;
+  const goalsHit = [1, 2, 3, 4, 5].filter((l) => {
+    const g = goalFor(l);
+    return g && completedLevel(l).length >= g.target;
+  }).length;
+
   return (
     <div>
-      <SectionTitle sub="Track each member's road to Distinguished Toastmaster — paths, officer service, mentoring, and the DTM project.">
-        DTM Tracker
+      <SectionTitle sub="Set yearly level-completion targets, track progress, and see who can help you hit each goal.">
+        Education Goals
       </SectionTitle>
 
-      <Card className="p-4 mb-5" accent={C.maroon}>
-        <h3 className="text-sm font-bold mb-2" style={{ color: C.blueDeep }}>Add a member to the DTM track</h3>
-        <div className="flex flex-wrap gap-2">
-          <select className={`${inputCls} max-w-xs`} style={inputStyle} value={pick}
-            onChange={(e) => setPick(e.target.value)}>
-            <option value="">Choose member…</option>
-            {untracked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+      {/* Year selector + summary */}
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <label className="flex items-center gap-2 text-sm font-semibold" style={{ color: C.blueDeep }}>
+          Year:
+          <select className={inputCls} style={{ ...inputStyle, width: "auto" }} value={goalYear}
+            onChange={(e) => setGoalYear(Number(e.target.value))}>
+            {allYears.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-          <Btn kind="maroon" onClick={startTracking} disabled={!pick}>Start tracking</Btn>
-        </div>
-        {data.members.length === 0 && (
-          <p className="text-xs mt-2" style={{ color: "#5B6B73" }}>Add members first, then track their DTM journey here.</p>
+        </label>
+        {totalGoals > 0 && (
+          <div className="flex gap-3">
+            <Badge fg={C.green} bg={C.greenBg}>{totalCompleted} level completions recorded</Badge>
+            <Badge fg={goalsHit === totalGoals ? C.green : C.amber} bg={goalsHit === totalGoals ? C.greenBg : C.amberBg}>
+              {goalsHit}/{totalGoals} goals achieved
+            </Badge>
+          </div>
         )}
-      </Card>
+      </div>
 
-      {tracked.length === 0 ? (
-        <Card className="p-8 text-center">
-          <p className="text-sm" style={{ color: "#5B6B73" }}>No one on the DTM track yet.</p>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {tracked.map((m) => {
-            const done = m.dtm.filter(Boolean).length;
-            const total = DTM_REQUIREMENTS.length;
-            const pct = (done / total) * 100;
-            return (
-              <Card key={m.id} className="p-4" accent={done === total ? C.green : C.blue}>
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="font-bold" style={{ color: C.blueDeep, fontFamily: SERIF }}>{m.name}</div>
-                  {done === total
-                    ? <Badge fg={C.green} bg={C.greenBg}>🏅 DTM complete</Badge>
-                    : <Badge fg={C.blue} bg="#E5EEF4">{done}/{total}</Badge>}
+      {/* Per-level goal cards */}
+      <div className="space-y-4 mb-8">
+        {[1, 2, 3, 4, 5].map((level) => {
+          const g = goalFor(level);
+          const completed = completedLevel(level);
+          const inProgress = inProgressLevel(level);
+          const actual = completed.length;
+          const target = g ? g.target : 0;
+          const pct = target > 0 ? Math.min(100, Math.round((actual / target) * 100)) : 0;
+          const hit = target > 0 && actual >= target;
+
+          return (
+            <Card key={level} className="p-4" accent={hit ? C.green : target > 0 ? (actual > 0 ? C.amber : C.grayLine) : C.grayLine}>
+              <div className="flex flex-wrap items-start gap-3 mb-3">
+                <div className="flex-1">
+                  <div className="font-bold text-sm" style={{ color: C.blueDeep, fontFamily: SERIF }}>
+                    Level {level} completions — {goalYear}
+                  </div>
+                  {memberPaths.length === 0 && (
+                    <div className="text-xs mt-0.5" style={{ color: "#5B6B73" }}>
+                      Members who finish all Level {level} Pathways projects
+                    </div>
+                  )}
                 </div>
-                <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: C.grayLine }}>
-                  <div className="h-full rounded-full"
-                    style={{ width: `${pct}%`, backgroundColor: done === total ? C.green : C.blue }} />
+                <div className="flex items-center gap-2">
+                  {hit && <Badge fg={C.green} bg={C.greenBg}>Goal met</Badge>}
+                  <label className="flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.blueDeep }}>
+                    Target:
+                    <input type="number" min="0" max="50"
+                      className={inputCls} style={{ ...inputStyle, width: "4rem" }}
+                      value={target || ""}
+                      placeholder="0"
+                      onChange={(e) => setGoalTarget(level, Math.max(0, Number(e.target.value) || 0))} />
+                    members
+                  </label>
                 </div>
-                <ul className="space-y-1.5">
-                  {DTM_REQUIREMENTS.map((req, i) => (
-                    <li key={req} className="flex items-start gap-2 text-sm">
-                      <input type="checkbox" checked={m.dtm[i]} className="mt-0.5"
-                        onChange={() => toggleReq(m.id, i)} />
-                      <span style={{
-                        color: m.dtm[i] ? "#8A958F" : C.ink,
-                        textDecoration: m.dtm[i] ? "line-through" : "none",
-                      }}>{req}</span>
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-3 text-right">
-                  <button className="text-xs" style={{ color: "#8A958F" }} onClick={() => stopTracking(m.id)}>
-                    Stop tracking
-                  </button>
+              </div>
+
+              {target > 0 && (
+                <div className="mb-3">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span style={{ color: "#5B6B73" }}>{actual} of {target} completed</span>
+                    <span style={{ color: hit ? C.green : C.ink }}>{pct}%</span>
+                  </div>
+                  <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: C.grayLine }}>
+                    <div className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, backgroundColor: hit ? C.green : C.maroon }} />
+                  </div>
                 </div>
-              </Card>
-            );
-          })}
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Completed this year */}
+                <div>
+                  <div className="text-xs font-bold mb-1" style={{ color: C.green }}>
+                    Completed Level {level} in {goalYear} ({actual})
+                  </div>
+                  {completed.length === 0 ? (
+                    <p className="text-xs" style={{ color: "#8A958F" }}>None recorded yet — add dates via member edit.</p>
+                  ) : (
+                    <ul className="space-y-0.5">
+                      {completed.map((m) => (
+                        <li key={m.id} className="flex items-center gap-1.5 text-xs">
+                          <span className="font-semibold" style={{ color: C.blueDeep }}>{m.name}</span>
+                          <span style={{ color: "#8A958F" }}>{fmtDate((m.levelDates || {})[String(level)])}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* In progress — can help hit the goal */}
+                <div>
+                  <div className="text-xs font-bold mb-1" style={{ color: C.amber }}>
+                    Working on Level {level} — can help ({inProgress.length})
+                  </div>
+                  {inProgress.length === 0 ? (
+                    <p className="text-xs" style={{ color: "#8A958F" }}>No active members at this level.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {inProgress.map((m) => (
+                        <Badge key={m.id} fg={C.amber} bg={C.amberBg}>{m.name}</Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Individual DTM tracker — secondary */}
+      <button onClick={() => setShowDTM((v) => !v)}
+        className="flex items-center gap-2 text-sm font-semibold mb-3"
+        style={{ color: C.blueDeep }}>
+        <span style={{ color: C.maroon }}>{showDTM ? "▲" : "▼"}</span>
+        Individual DTM tracker {showDTM ? "(hide)" : "(show)"}
+      </button>
+
+      {showDTM && (
+        <div>
+          <Card className="p-4 mb-4" accent={C.maroon}>
+            <h3 className="text-sm font-bold mb-2" style={{ color: C.blueDeep }}>Add a member to the DTM track</h3>
+            <div className="flex flex-wrap gap-2">
+              <select className={`${inputCls} max-w-xs`} style={inputStyle} value={pick}
+                onChange={(e) => setPick(e.target.value)}>
+                <option value="">Choose member…</option>
+                {untracked.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+              <Btn kind="maroon" onClick={startTracking} disabled={!pick}>Start tracking</Btn>
+            </div>
+          </Card>
+
+          {tracked.length === 0 ? (
+            <Card className="p-6 text-center">
+              <p className="text-sm" style={{ color: "#5B6B73" }}>No one on the DTM track yet.</p>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {tracked.map((m) => {
+                const done = m.dtm.filter(Boolean).length;
+                const total = DTM_REQUIREMENTS.length;
+                const pct = (done / total) * 100;
+                return (
+                  <Card key={m.id} className="p-4" accent={done === total ? C.green : C.blue}>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="font-bold" style={{ color: C.blueDeep, fontFamily: SERIF }}>{m.name}</div>
+                      {done === total
+                        ? <Badge fg={C.green} bg={C.greenBg}>DTM complete</Badge>
+                        : (
+                          <div className="flex flex-col items-end gap-1">
+                            <Badge fg={C.blue} bg="#E5EEF4">{done}/{total} done</Badge>
+                            <span className="text-xs" style={{ color: C.amber }}>{total - done} to go</span>
+                          </div>
+                        )}
+                    </div>
+                    <div className="h-2 rounded-full overflow-hidden mb-3" style={{ backgroundColor: C.grayLine }}>
+                      <div className="h-full rounded-full"
+                        style={{ width: `${pct}%`, backgroundColor: done === total ? C.green : C.blue }} />
+                    </div>
+                    <ul className="space-y-1.5">
+                      {DTM_REQUIREMENTS.map((req, i) => (
+                        <li key={req} className="flex items-start gap-2 text-sm">
+                          <input type="checkbox" checked={m.dtm[i]} className="mt-0.5"
+                            onChange={() => toggleReq(m.id, i)} />
+                          <span style={{
+                            color: m.dtm[i] ? "#8A958F" : C.ink,
+                            textDecoration: m.dtm[i] ? "line-through" : "none",
+                          }}>{req}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-3 text-right">
+                      <button className="text-xs" style={{ color: "#8A958F" }} onClick={() => stopTracking(m.id)}>
+                        Stop tracking
+                      </button>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1248,7 +1595,7 @@ const NAV = [
   { key: "cycles", label: "Cycles", icon: "🔄" },
   { key: "weekly", label: "Weekly", icon: "☑" },
   { key: "recognition", label: "Recognition", short: "Awards", icon: "🏆" },
-  { key: "dtm", label: "DTM", icon: "🎖" },
+  { key: "dtm", label: "Education Goals", short: "Goals", icon: "🎖" },
 ];
 
 export default function VPEDashboard() {
@@ -1280,6 +1627,7 @@ export default function VPEDashboard() {
           cycles: Array.isArray(parsed.cycles) && parsed.cycles.length === 6 ? parsed.cycles : base.cycles,
           recognitions: Array.isArray(parsed.recognitions) ? parsed.recognitions : [],
           weeks: Array.isArray(parsed.weeks) ? parsed.weeks : [],
+          educationGoals: Array.isArray(parsed.educationGoals) ? parsed.educationGoals : [],
         });
         notify("Data loaded from file.");
       } catch {
@@ -1303,7 +1651,7 @@ export default function VPEDashboard() {
   const exportExcel = () => {
     const rows = data.members.map((m) => ({
       Name: m.name,
-      Path: m.path,
+      Path: memberPaths(m).join(", "),
       Level: m.level,
       "Current project": m.currentProject,
       "Last attended": m.lastAttended || "",
